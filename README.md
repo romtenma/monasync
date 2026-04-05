@@ -63,7 +63,7 @@ module github.com/romtenma/monasync
 Import example:
 
 ```go
-import "github.com/romtenma/monasync/internal/app"
+import "github.com/romtenma/monasync/pkg/app"
 ```
 
 ## Example Usage

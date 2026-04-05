@@ -12,9 +12,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/romtenma/monasync/internal/config"
-	"github.com/romtenma/monasync/internal/store"
-	"github.com/romtenma/monasync/internal/syncxml"
+	"github.com/romtenma/monasync/pkg/config"
+	"github.com/romtenma/monasync/pkg/store"
+	"github.com/romtenma/monasync/pkg/syncxml"
 )
 
 func TestHandleSyncReturnsForbiddenWhenDailyLimitExceeded(t *testing.T) {

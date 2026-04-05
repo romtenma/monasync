@@ -15,7 +15,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/romtenma/monasync/internal/syncxml"
+	"github.com/romtenma/monasync/pkg/syncxml"
 )
 
 type Store struct {

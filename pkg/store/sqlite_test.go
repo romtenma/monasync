@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/romtenma/monasync/internal/syncxml"
+	"github.com/romtenma/monasync/pkg/syncxml"
 )
 
 func TestReplaceSnapshotPreservesFieldsAndFallbackTitle(t *testing.T) {

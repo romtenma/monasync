@@ -7,7 +7,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/romtenma/monasync/internal/store"
+	"github.com/romtenma/monasync/pkg/store"
 )
 
 type adminPageData struct {

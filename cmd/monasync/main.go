@@ -8,9 +8,9 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/romtenma/monasync/internal/app"
-	"github.com/romtenma/monasync/internal/config"
-	"github.com/romtenma/monasync/internal/store"
+	"github.com/romtenma/monasync/pkg/app"
+	"github.com/romtenma/monasync/pkg/config"
+	"github.com/romtenma/monasync/pkg/store"
 )
 
 func main() {
