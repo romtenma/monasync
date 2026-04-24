@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+
+	"github.com/joho/godotenv"
 )
 
 type Config struct {
@@ -17,6 +19,9 @@ type Config struct {
 }
 
 func Load() (Config, error) {
+	// .env ファイルを読み込む（ファイルが存在しない場合は無視）
+	_ = godotenv.Load()
+
 	cfg := Config{
 		Addr:       valueOrDefault("MONASYNC_ADDR", ":8081"),
 		DBPath:     valueOrDefault("MONASYNC_DB_PATH", filepath.Join("data", "monasync.db")),
