@@ -117,12 +117,11 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response := buildResponse(records, clientState)
-	payload, err := marshalResponse(bodyBytes, req, response, records, clientState)
+	responseBytes, err := marshalResponse(r.URL.Path, response, records, clientState)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("marshal xml: %v", err), http.StatusInternalServerError)
 		return
 	}
-	responseBytes := append([]byte(xml.Header), payload...)
 	s.logXML("response", responseBytes)
 
 	writer, closeWriter, err := encodeResponseWriter(w, r)
@@ -245,32 +244,34 @@ func buildLegacyResponse(records []store.ThreadRecord, state store.ClientState) 
 	}
 }
 
-func marshalResponse(body []byte, req syncxml.Request, response syncxml.Response, records []store.ThreadRecord, state store.ClientState) ([]byte, error) {
-	if useLegacyResponse(body, req) {
+func marshalResponse(path string, response syncxml.Response, records []store.ThreadRecord, state store.ClientState) ([]byte, error) {
+	if useLegacyResponse(path) {
 		payload, err := xml.MarshalIndent(buildLegacyResponse(records, state), "", "  ")
 		if err != nil {
 			return nil, err
 		}
-		return rewriteEmptyElements(payload), nil
+		return append([]byte(xml.Header), rewriteEmptyElements(payload)...), nil
 	}
 
 	payload, err := xml.MarshalIndent(response, "", "  ")
 	if err != nil {
 		return nil, err
 	}
-	return rewriteEmptyElements(payload), nil
+	return append([]byte(xml.Header), rewriteEmptyElements(payload)...), nil
 }
 
-func useLegacyResponse(body []byte, req syncxml.Request) bool {
-	return !req.HasEntities
+func useLegacyResponse(path string) bool {
+	return path == "/api/sync"
 }
 
 var emptyThElementPattern = regexp.MustCompile(`<th([^>]*)></th>`)
 var emptyThreadElementPattern = regexp.MustCompile(`<thread([^>]*)></thread>`)
+var responseElementOrderPattern = regexp.MustCompile(`(?s)(\s*)(<thread_group\b[^>]*>.*?</thread_group>)(\s*)(<entities\b[^>]*>.*?</entities>)`)
 
 func rewriteEmptyElements(payload []byte) []byte {
 	payload = emptyThElementPattern.ReplaceAll(payload, []byte(`<th$1 />`))
-	return emptyThreadElementPattern.ReplaceAll(payload, []byte(`<thread$1 />`))
+	payload = emptyThreadElementPattern.ReplaceAll(payload, []byte(`<thread$1 />`))
+	return responseElementOrderPattern.ReplaceAll(payload, []byte(`$1$4$3$2`))
 }
 
 func loggingMiddleware(next http.Handler) http.Handler {

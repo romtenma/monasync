@@ -286,6 +286,47 @@ func TestHandleSyncAcceptsGzipRequestBody(t *testing.T) {
 	}
 }
 
+func TestHandleSyncReturnsLegacyResponseOnSyncPath(t *testing.T) {
+	st := openAppTestStore(t)
+	t.Cleanup(func() {
+		_ = st.Close()
+	})
+
+	srv := New(config.Config{
+		User:       "user",
+		Password:   "pass",
+		DailyLimit: 30,
+	}, st)
+
+	body := `<?xml version="1.0" encoding="UTF-8"?>
+<sync2ch_request sync_number="0" client_id="0" sync_rl="post" client_name="Siki" client_version="1.0" os="Windows">
+  <entities>
+    <th id="1" url="https://example.com/test/read.cgi/board/123/" title="thread title" read="1" now="1" count="1"/>
+  </entities>
+  <thread_group category="favorite" struct="default">
+    <dir name="★" id_list="1"/>
+  </thread_group>
+</sync2ch_request>`
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sync", strings.NewReader(body))
+	req.Header.Set("Authorization", basicAuth("user", "pass"))
+	rec := httptest.NewRecorder()
+	srv.handleSync(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "<entities>") {
+		t.Fatalf("legacy response should not contain entities: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `<thread_group category="favorite">`) {
+		t.Fatalf("legacy response should contain thread_group: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `<thread `) {
+		t.Fatalf("legacy response should contain thread element: %s", rec.Body.String())
+	}
+}
+
 func TestHandleSyncReturnsNewResponseForEntityRequest(t *testing.T) {
 	st := openAppTestStore(t)
 	t.Cleanup(func() {
@@ -322,12 +363,15 @@ func TestHandleSyncReturnsNewResponseForEntityRequest(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), `<thread_group category="favorite" struct="default">`) {
 		t.Fatalf("new response should contain sync3 thread_group: %s", rec.Body.String())
 	}
+	if strings.Index(rec.Body.String(), "<entities>") > strings.Index(rec.Body.String(), "<thread_group") {
+		t.Fatalf("entities should appear before thread_group: %s", rec.Body.String())
+	}
 	if !strings.Contains(rec.Body.String(), `<th id="0" url="https://example.com/test/read.cgi/board/123/" s="n" />`) {
 		t.Fatalf("new response should contain sync3 th element: %s", rec.Body.String())
 	}
 }
 
-func TestHandleSyncReturnsLegacyResponseWithoutEntities(t *testing.T) {
+func TestHandleSyncReturnsNewResponseWithoutEntitiesOnSync3(t *testing.T) {
 	st := openAppTestStore(t)
 	t.Cleanup(func() {
 		_ = st.Close()
@@ -356,14 +400,14 @@ func TestHandleSyncReturnsLegacyResponseWithoutEntities(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
-	if strings.Contains(rec.Body.String(), "<entities>") {
-		t.Fatalf("legacy response should not contain entities: %s", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "<entities>") {
+		t.Fatalf("sync3 response should contain entities even without request entities: %s", rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), `<thread_group category="favorite">`) {
-		t.Fatalf("legacy response should contain thread_group: %s", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), `<thread_group category="favorite" struct="default">`) {
+		t.Fatalf("sync3 response should contain default thread_group: %s", rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), `<thread `) {
-		t.Fatalf("legacy response should contain thread element: %s", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), `<th id="0" url="https://example.com/test/read.cgi/board/777/" s="n" />`) {
+		t.Fatalf("sync3 response should contain th element: %s", rec.Body.String())
 	}
 }
 

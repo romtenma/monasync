@@ -27,9 +27,10 @@ var ErrSyncLimitExceeded = errors.New("sync exhausted")
 var nowFunc = time.Now
 
 type ClientState struct {
-	ClientID   int64
-	SyncNumber int64
-	Remain     int64
+	ClientID    int64
+	SyncNumber  int64
+	Remain      int64
+	AccountType string
 }
 
 type clientRow struct {
@@ -403,6 +404,7 @@ func loadOrCreateClient(ctx context.Context, tx *sql.Tx, username string, reques
 	if requestedClientID > 0 {
 		current.ClientID = requestedClientID
 	}
+	current.AccountType = "無料ユーザー"
 
 	today := now.In(time.Local).Format(time.DateOnly)
 	if current.SyncDay != today {

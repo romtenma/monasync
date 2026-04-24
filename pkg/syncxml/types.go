@@ -3,6 +3,7 @@ package syncxml
 import (
 	"encoding/xml"
 	"fmt"
+	"log"
 	"strings"
 )
 
@@ -46,9 +47,10 @@ func (r *Request) UnmarshalXML(decoder *xml.Decoder, start xml.StartElement) err
 	r.ClientVer = raw.ClientVer
 	r.OS = raw.OS
 	r.Entities = raw.Entities
+	log.Println("Parsed request with entities:", raw.Entities, "and thread groups:", len(raw.ThreadGroups))
 	r.HasEntities = len(raw.Entities.Threads) > 0
 	r.ThreadGroup = selectFavoriteGroup(raw.ThreadGroups)
-	r.HasThreadGroup = len(r.ThreadGroup.Dirs) > 0
+	r.HasThreadGroup = len(r.ThreadGroup.Dirs) > 0 || len(r.ThreadGroup.Threads) > 0 || len(r.ThreadGroup.THs) > 0
 
 	if !r.HasEntities {
 		r.Entities, r.ThreadGroup = normalizeFavoriteGroup(r.ThreadGroup)
@@ -74,6 +76,7 @@ type RequestThread struct {
 type RequestGroup struct {
 	Category string          `xml:"category,attr"`
 	Struct   string          `xml:"struct,attr"`
+	THs      []RequestThread `xml:"th"`
 	Threads  []RequestThread `xml:"thread"`
 	Dirs     []RequestDir    `xml:"dir"`
 }
@@ -98,7 +101,7 @@ func selectFavoriteGroup(groups []RequestGroup) RequestGroup {
 }
 
 func normalizeFavoriteGroup(group RequestGroup) (RequestItems, RequestGroup) {
-	if len(group.Dirs) == 0 && len(group.Threads) == 0 {
+	if len(group.Dirs) == 0 && len(group.Threads) == 0 && len(group.THs) == 0 {
 		return RequestItems{}, group
 	}
 
@@ -109,6 +112,10 @@ func normalizeFavoriteGroup(group RequestGroup) (RequestItems, RequestGroup) {
 
 	if len(group.Threads) > 0 {
 		collectFavoriteThreads(RequestDir{Threads: group.Threads}, "", &threads, dirIDs, &dirOrder, &nextID)
+	}
+
+	if len(group.THs) > 0 {
+		collectFavoriteThreads(RequestDir{Threads: group.THs}, "", &threads, dirIDs, &dirOrder, &nextID)
 	}
 
 	for _, dir := range group.Dirs {
@@ -165,9 +172,10 @@ type Response struct {
 }
 
 type ResponseGroup struct {
-	Category string        `xml:"category,attr,omitempty"`
-	Struct   string        `xml:"struct,attr,omitempty"`
-	Dirs     []ResponseDir `xml:"dir"`
+	Category string              `xml:"category,attr,omitempty"`
+	Struct   string              `xml:"struct,attr,omitempty"`
+	Dirs     []ResponseDir       `xml:"dir,omitempty"`
+	Threads  []ResponseThreadRef `xml:"th,omitempty"`
 }
 
 type ResponseDir struct {
