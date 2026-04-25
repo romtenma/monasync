@@ -68,9 +68,21 @@ import "github.com/romtenma/monasync/pkg/app"
 
 ## Example Usage
 
-```powershell
-$env:MONASYNC_USER = "admin"
-$env:MONASYNC_PASSWORD = "change-me"
+1. Create a `.env` file in the project root by copying from `.env.example`:
+
+```
+MONASYNC_USER=admin
+MONASYNC_PASSWORD=change-me
+MONASYNC_ADDR=:8081
+MONASYNC_DB_PATH=./data/monasync.db
+MONASYNC_DAILY_LIMIT=99
+```
+
+The `.env` file should be placed in the same directory as the executable to take effect.
+
+2. Run the server:
+
+```
 go run ./cmd/monasync
 ```
 
