@@ -65,7 +65,14 @@ func Open(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("create db dir: %w", err)
 	}
 
-	db, err := sql.Open("sqlite", dbPath)
+	dsn := dbPath
+	if !strings.Contains(dsn, "?") {
+		dsn += "?_pragma=busy_timeout(10000)"
+	} else if !strings.Contains(dsn, "busy_timeout") {
+		dsn += "&_pragma=busy_timeout(10000)"
+	}
+
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
@@ -84,7 +91,9 @@ func (s *Store) Close() error {
 }
 
 func (s *Store) ReplaceSnapshot(ctx context.Context, username string, req syncxml.Request, dailyLimit int64) ([]ThreadRecord, ClientState, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := retryOnLocked(ctx, func() (*sql.Tx, error) {
+		return s.db.BeginTx(ctx, nil)
+	})
 	if err != nil {
 		return nil, ClientState{}, fmt.Errorf("begin tx: %w", err)
 	}
@@ -240,16 +249,21 @@ func (s *Store) ReplaceSnapshot(ctx context.Context, username string, req syncxm
 }
 
 func (s *Store) HealthCheck(ctx context.Context) error {
-	return s.db.PingContext(ctx)
+	_, err := retryOnLocked(ctx, func() (struct{}, error) {
+		return struct{}{}, s.db.PingContext(ctx)
+	})
+	return err
 }
 
 func (s *Store) ListThreads(ctx context.Context, username string) ([]ThreadRecord, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT url, title, dir_name, read_value, now_value, count_value, modified_sync
-		FROM threads
-		WHERE username = ?
-		ORDER BY dir_name, url
-	`, username)
+	rows, err := retryOnLocked(ctx, func() (*sql.Rows, error) {
+		return s.db.QueryContext(ctx, `
+			SELECT url, title, dir_name, read_value, now_value, count_value, modified_sync
+			FROM threads
+			WHERE username = ?
+			ORDER BY dir_name, url
+		`, username)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("query threads: %w", err)
 	}
@@ -276,7 +290,9 @@ func (s *Store) DeleteThread(ctx context.Context, username string, url string) (
 		return DeleteThreadResult{}, nil
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := retryOnLocked(ctx, func() (*sql.Tx, error) {
+		return s.db.BeginTx(ctx, nil)
+	})
 	if err != nil {
 		return DeleteThreadResult{}, fmt.Errorf("begin tx: %w", err)
 	}
@@ -594,4 +610,28 @@ func threadPayloadChanged(left ThreadRecord, right ThreadRecord) bool {
 func normalizeComparableRecord(record ThreadRecord) ThreadRecord {
 	record.Dir = normalizeDirName(record.Dir)
 	return record
+}
+
+func isDatabaseLockedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "database is locked") || strings.Contains(msg, "SQLITE_BUSY")
+}
+
+func retryOnLocked[T any](ctx context.Context, op func() (T, error)) (T, error) {
+	for i := 0; i < 15; i++ {
+		res, err := op()
+		if err == nil || !isDatabaseLockedError(err) {
+			return res, err
+		}
+		select {
+		case <-ctx.Done():
+			var zero T
+			return zero, fmt.Errorf("context canceled during retry: %w", ctx.Err())
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+	return op()
 }

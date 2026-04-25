@@ -1,4 +1,4 @@
-# MonaSync （　´∀｀）
+# MonaSync （ ´∀｀）
 
 A server for personal use that reimplements a minimal compatible sync2ch API in Go.
 

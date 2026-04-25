@@ -196,7 +196,7 @@ var adminPageTmpl = template.Must(template.New("admin-page").Parse(`<!DOCTYPE ht
   <main class="shell">
     <section class="hero">
       <div>
-        <h1>MonaSync （　´∀｀）</h1>
+        <h1>MonaSync （ ´∀｀）</h1>
         <p class="sub">Review the current snapshot and remove entries directly from the browser.</p>
       </div>
       <div class="badge">User: {{.Username}} / {{len .Threads}} items</div>
