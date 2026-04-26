@@ -289,6 +289,7 @@ func int64Ptr(value int64) *int64 {
 func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (string, bool) {
 	username, password, ok := r.BasicAuth()
 	if !ok || username != s.cfg.User || password != s.cfg.Password {
+		log.Printf("authenticate: failed for user %q from %s", username, r.RemoteAddr)
 		w.Header().Set("WWW-Authenticate", `Basic realm="MonaSync"`)
 		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
 		return "", false
