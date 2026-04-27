@@ -35,6 +35,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	mux.HandleFunc("/threads/delete", s.handleDeleteThread)
 	mux.HandleFunc("/api/sync", s.handleSync)
+	mux.HandleFunc("/api/sync1", s.handleSync)
 	mux.HandleFunc("/api/sync3", s.handleSync)
 
 	httpServer := &http.Server{
@@ -261,7 +262,7 @@ func marshalResponse(path string, response syncxml.Response, records []store.Thr
 }
 
 func useLegacyResponse(path string) bool {
-	return path == "/api/sync"
+	return path == "/api/sync" || path == "/api/sync1"
 }
 
 var emptyThElementPattern = regexp.MustCompile(`<th([^>]*)></th>`)
