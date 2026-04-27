@@ -354,6 +354,31 @@ func (s *Store) GetRecentSyncLogs(ctx context.Context, username string, limit in
 	return logs, nil
 }
 
+func (s *Store) UpdateThread(ctx context.Context, username string, threadURL string, read, now, count int64) (bool, error) {
+	threadURL = strings.TrimSpace(threadURL)
+	if threadURL == "" {
+		return false, nil
+	}
+
+	result, err := retryOnLocked(ctx, func() (sql.Result, error) {
+		return s.db.ExecContext(ctx, `
+			UPDATE threads
+			SET read_value = ?, now_value = ?, count_value = ?
+			WHERE username = ? AND url = ?
+		`, read, now, count, username, threadURL)
+	})
+	if err != nil {
+		return false, fmt.Errorf("update thread: %w", err)
+	}
+
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("thread rows affected: %w", err)
+	}
+
+	return affected > 0, nil
+}
+
 func (s *Store) DeleteThread(ctx context.Context, username string, url string) (DeleteThreadResult, error) {
 	url = strings.TrimSpace(url)
 	if url == "" {

@@ -1,10 +1,12 @@
 package app
 
 import (
+	"encoding/json"
 	"html/template"
 	"log"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/romtenma/monasync/pkg/store"
@@ -173,6 +175,67 @@ var adminPageTmpl = template.Must(template.New("admin-page").Parse(`<!DOCTYPE ht
       background: #ffe3de;
     }
 
+    .save-button {
+      border: 0;
+      border-radius: 999px;
+      padding: 10px 14px;
+      background: rgba(15, 118, 110, 0.12);
+      color: var(--accent-strong);
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+      display: none;
+    }
+
+    .save-button:hover {
+      background: rgba(15, 118, 110, 0.22);
+    }
+
+    .edit-toggle {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 8px 18px;
+      background: rgba(255,255,255,0.7);
+      color: var(--ink);
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .edit-toggle.active {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+    }
+
+    .edit-input {
+      display: none;
+      width: 72px;
+      padding: 4px 8px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      font: inherit;
+      font-feature-settings: "tnum" 1;
+      background: #fff;
+      color: var(--ink);
+    }
+
+    body.edit-mode .edit-input {
+      display: inline-block;
+    }
+
+    body.edit-mode .edit-val {
+      display: none;
+    }
+
+    body.edit-mode .save-button {
+      display: inline-block;
+    }
+
+    body.edit-mode .delete-button {
+      display: none;
+    }
+
     .empty {
       padding: 40px 24px;
       text-align: center;
@@ -211,6 +274,50 @@ var adminPageTmpl = template.Must(template.New("admin-page").Parse(`<!DOCTYPE ht
       }
     }
 
+    function toggleEdit(btn) {
+      const isEdit = document.body.classList.toggle('edit-mode');
+      btn.classList.toggle('active', isEdit);
+      btn.textContent = isEdit ? 'Cancel Edit' : 'Edit';
+    }
+
+    function saveThread(btn) {
+      const row = btn.closest('tr');
+      const url = row.querySelector('.save-form input[name="url"]').value;
+      const read = row.querySelector('.edit-input[data-field="read"]').value;
+      const now  = row.querySelector('.edit-input[data-field="now"]').value;
+      const count = row.querySelector('.edit-input[data-field="count"]').value;
+
+      const body = new URLSearchParams({ url, read, now, count });
+
+      btn.disabled = true;
+      btn.textContent = '...';
+
+      fetch('/threads/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
+        body: body.toString(),
+      })
+        .then(res => res.json())
+        .then(data => {
+          if (data.ok) {
+            row.querySelector('.edit-val[data-field="read"]').textContent = read;
+            row.querySelector('.edit-val[data-field="now"]').textContent  = now;
+            row.querySelector('.edit-val[data-field="count"]').textContent = count;
+            btn.textContent = 'Done';
+            setTimeout(() => { btn.textContent = 'Save'; btn.disabled = false; }, 1500);
+          } else {
+            alert(data.message || 'Failed to save.');
+            btn.textContent = 'Save';
+            btn.disabled = false;
+          }
+        })
+        .catch(() => {
+          alert('Network error.');
+          btn.textContent = 'Save';
+          btn.disabled = false;
+        });
+    }
+
     document.addEventListener('DOMContentLoaded', () => {
       document.querySelectorAll('.sync-time').forEach(el => {
         const d = new Date(el.textContent);
@@ -236,6 +343,9 @@ var adminPageTmpl = template.Must(template.New("admin-page").Parse(`<!DOCTYPE ht
           Today's Syncs: {{.Client.SyncCount}}
         </div>
         {{end}}
+        <div style="margin-top: 10px;">
+          <button class="edit-toggle" type="button" onclick="toggleEdit(this)">Edit</button>
+        </div>
       </div>
     </section>
     {{if .Message}}<p class="notice">{{.Message}}</p>{{end}}
@@ -289,14 +399,27 @@ var adminPageTmpl = template.Must(template.New("admin-page").Parse(`<!DOCTYPE ht
               <div class="url">{{.URL}}</div>
             </td>
             <td class="dir">{{.Dir}}</td>
-            <td class="metrics">{{.Read}}</td>
-            <td class="metrics">{{.Now}}</td>
-            <td class="metrics">{{.Count}}</td>
+            <td class="metrics">
+              <span class="edit-val" data-field="read">{{.Read}}</span>
+              <input class="edit-input" type="number" min="0" data-field="read" value="{{.Read}}">
+            </td>
+            <td class="metrics">
+              <span class="edit-val" data-field="now">{{.Now}}</span>
+              <input class="edit-input" type="number" min="0" data-field="now" value="{{.Now}}">
+            </td>
+            <td class="metrics">
+              <span class="edit-val" data-field="count">{{.Count}}</span>
+              <input class="edit-input" type="number" min="0" data-field="count" value="{{.Count}}">
+            </td>
             <td>
               <form class="delete-form" method="post" action="/threads/delete">
                 <input type="hidden" name="url" value="{{.URL}}">
                 <button class="delete-button" type="button" onclick="confirmDelete(this)">Delete</button>
               </form>
+              <form class="save-form" style="display:none;">
+                <input type="hidden" name="url" value="{{.URL}}">
+              </form>
+              <button class="save-button" type="button" onclick="saveThread(this)">Save</button>
             </td>
           </tr>
           {{end}}
@@ -385,6 +508,76 @@ func (s *Server) handleDeleteThread(w http.ResponseWriter, r *http.Request) {
 	message := "Thread was not found."
 	if result.Deleted {
 		message = "Thread deleted."
+	}
+	http.Redirect(w, r, "/?message="+url.QueryEscape(message), http.StatusSeeOther)
+}
+
+func (s *Server) handleUpdateThread(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+		return
+	}
+
+	username, ok := s.authenticate(w, r)
+	if !ok {
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+		return
+	}
+
+	threadURL := strings.TrimSpace(r.FormValue("url"))
+	if threadURL == "" {
+		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+		return
+	}
+
+	parseInt := func(key string) (int64, error) {
+		v := strings.TrimSpace(r.FormValue(key))
+		if v == "" {
+			return 0, nil
+		}
+		return strconv.ParseInt(v, 10, 64)
+	}
+
+	read, err := parseInt("read")
+	if err != nil {
+		http.Error(w, "invalid read value", http.StatusBadRequest)
+		return
+	}
+	now, err := parseInt("now")
+	if err != nil {
+		http.Error(w, "invalid now value", http.StatusBadRequest)
+		return
+	}
+	count, err := parseInt("count")
+	if err != nil {
+		http.Error(w, "invalid count value", http.StatusBadRequest)
+		return
+	}
+
+	found, err := s.store.UpdateThread(r.Context(), username, threadURL, read, now, count)
+	if err != nil {
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		log.Printf("update thread: %v", err)
+		return
+	}
+
+	if r.Header.Get("Accept") == "application/json" {
+		w.Header().Set("Content-Type", "application/json")
+		if found {
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "message": "Thread updated."})
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "message": "Thread was not found."})
+		}
+		return
+	}
+
+	message := "Thread was not found."
+	if found {
+		message = "Thread updated."
 	}
 	http.Redirect(w, r, "/?message="+url.QueryEscape(message), http.StatusSeeOther)
 }

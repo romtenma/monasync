@@ -34,6 +34,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	mux.HandleFunc("/", s.handleAdminPage)
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	mux.HandleFunc("/threads/delete", s.handleDeleteThread)
+	mux.HandleFunc("/threads/update", s.handleUpdateThread)
 	mux.HandleFunc("/api/sync", s.handleSync)
 	mux.HandleFunc("/api/sync1", s.handleSync)
 	mux.HandleFunc("/api/sync3", s.handleSync)
