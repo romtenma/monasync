@@ -60,6 +60,22 @@ type DeletedThreadRecord struct {
 	Sync int64
 }
 
+type ClientInfo struct {
+	ClientID   int64
+	SyncNumber int64
+	SyncDay    string
+	SyncCount  int64
+	LastSyncAt string
+}
+
+type SyncLog struct {
+	ClientName    string
+	ClientVersion string
+	OS            string
+	SyncNumber    int64
+	CreatedAt     string
+}
+
 func Open(dbPath string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		return nil, fmt.Errorf("create db dir: %w", err)
@@ -102,6 +118,13 @@ func (s *Store) ReplaceSnapshot(ctx context.Context, username string, req syncxm
 	clientState, err := loadOrCreateClient(ctx, tx, username, req.ClientID, req.SyncNumber, dailyLimit, nowFunc())
 	if err != nil {
 		return nil, ClientState{}, err
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO sync_logs (username, client_name, client_version, os, sync_number, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, username, req.ClientName, req.ClientVer, req.OS, clientState.SyncNumber, nowFunc().UTC().Format(time.RFC3339Nano)); err != nil {
+		return nil, ClientState{}, fmt.Errorf("insert sync log: %w", err)
 	}
 
 	dirByID := make(map[string]string, len(req.Entities.Threads))
@@ -284,6 +307,53 @@ func (s *Store) ListThreads(ctx context.Context, username string) ([]ThreadRecor
 	return threads, nil
 }
 
+func (s *Store) GetClientInfo(ctx context.Context, username string) (ClientInfo, error) {
+	var info ClientInfo
+	_, err := retryOnLocked(ctx, func() (struct{}, error) {
+		return struct{}{}, s.db.QueryRowContext(ctx, `
+			SELECT client_id, sync_number, sync_day, sync_count, last_sync_at
+			FROM clients
+			WHERE username = ?
+		`, username).Scan(&info.ClientID, &info.SyncNumber, &info.SyncDay, &info.SyncCount, &info.LastSyncAt)
+	})
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return info, nil
+		}
+		return info, fmt.Errorf("query client info: %w", err)
+	}
+	return info, nil
+}
+
+func (s *Store) GetRecentSyncLogs(ctx context.Context, username string, limit int) ([]SyncLog, error) {
+	rows, err := retryOnLocked(ctx, func() (*sql.Rows, error) {
+		return s.db.QueryContext(ctx, `
+			SELECT client_name, client_version, os, sync_number, created_at
+			FROM sync_logs
+			WHERE username = ?
+			ORDER BY created_at DESC
+			LIMIT ?
+		`, username, limit)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("query sync logs: %w", err)
+	}
+	defer rows.Close()
+
+	var logs []SyncLog
+	for rows.Next() {
+		var log SyncLog
+		if err := rows.Scan(&log.ClientName, &log.ClientVersion, &log.OS, &log.SyncNumber, &log.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan sync log: %w", err)
+		}
+		logs = append(logs, log)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate sync logs: %w", err)
+	}
+	return logs, nil
+}
+
 func (s *Store) DeleteThread(ctx context.Context, username string, url string) (DeleteThreadResult, error) {
 	url = strings.TrimSpace(url)
 	if url == "" {
@@ -377,6 +447,16 @@ func (s *Store) migrate(ctx context.Context) error {
 			deleted_sync INTEGER NOT NULL,
 			updated_at TEXT NOT NULL,
 			PRIMARY KEY (username, url)
+		);
+
+		CREATE TABLE IF NOT EXISTS sync_logs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			username TEXT NOT NULL,
+			client_name TEXT NOT NULL,
+			client_version TEXT NOT NULL,
+			os TEXT NOT NULL,
+			sync_number INTEGER NOT NULL,
+			created_at TEXT NOT NULL
 		);
 	`)
 	if err != nil {

@@ -14,6 +14,8 @@ type adminPageData struct {
 	Username string
 	Threads  []store.ThreadRecord
 	Message  string
+	Client   store.ClientInfo
+	SyncLogs []store.SyncLog
 }
 
 var adminPageTmpl = template.Must(template.New("admin-page").Parse(`<!DOCTYPE html>
@@ -191,6 +193,33 @@ var adminPageTmpl = template.Must(template.New("admin-page").Parse(`<!DOCTYPE ht
       }
     }
   </style>
+  <script>
+    function confirmDelete(btn) {
+      if (btn.dataset.confirm !== 'true') {
+        btn.dataset.confirm = 'true';
+        btn.innerText = 'Delete';
+        btn.style.backgroundColor = '#b42318';
+        btn.style.color = '#fff';
+        setTimeout(() => {
+          btn.dataset.confirm = 'false';
+          btn.innerText = 'Delete';
+          btn.style.backgroundColor = 'var(--danger-bg)';
+          btn.style.color = 'var(--danger)';
+        }, 3000);
+      } else {
+        btn.form.submit();
+      }
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+      document.querySelectorAll('.sync-time').forEach(el => {
+        const d = new Date(el.textContent);
+        if(!isNaN(d)) {
+          el.textContent = d.toLocaleString();
+        }
+      });
+    });
+  </script>
 </head>
 <body>
   <main class="shell">
@@ -199,9 +228,46 @@ var adminPageTmpl = template.Must(template.New("admin-page").Parse(`<!DOCTYPE ht
         <h1>MonaSync （ ´∀｀）</h1>
         <p class="sub">Review the current snapshot and remove entries directly from the browser.</p>
       </div>
-      <div class="badge">User: {{.Username}} / {{len .Threads}} items</div>
+      <div style="text-align: right;">
+        <div class="badge" style="margin-bottom: 8px; display: inline-block;">User: {{.Username}} / {{len .Threads}} items</div>
+        {{if .Client.LastSyncAt}}
+        <div class="sub" style="margin: 0; font-size: 0.85rem;">
+          Last Sync: <span class="sync-time">{{.Client.LastSyncAt}}</span><br>
+          Today's Syncs: {{.Client.SyncCount}}
+        </div>
+        {{end}}
+      </div>
     </section>
     {{if .Message}}<p class="notice">{{.Message}}</p>{{end}}
+    
+    {{if .SyncLogs}}
+    <h2 style="font-size: 1.2rem; margin-top: 0; margin-bottom: 12px; color: var(--accent-strong);">Recent Syncs</h2>
+    <section class="table-wrap" style="margin-bottom: 24px;">
+      <table>
+        <thead>
+          <tr>
+            <th>Client Name</th>
+            <th>Version</th>
+            <th>OS</th>
+            <th>Sync #</th>
+            <th>Time</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{range .SyncLogs}}
+          <tr>
+            <td style="font-weight: bold;">{{.ClientName}}</td>
+            <td>{{.ClientVersion}}</td>
+            <td>{{.OS}}</td>
+            <td class="metrics">{{.SyncNumber}}</td>
+            <td class="sync-time">{{.CreatedAt}}</td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </section>
+    {{end}}
+
     <section class="table-wrap">
       {{if .Threads}}
       <table>
@@ -229,7 +295,7 @@ var adminPageTmpl = template.Must(template.New("admin-page").Parse(`<!DOCTYPE ht
             <td>
               <form class="delete-form" method="post" action="/threads/delete">
                 <input type="hidden" name="url" value="{{.URL}}">
-                <button class="delete-button" type="submit">Delete</button>
+                <button class="delete-button" type="button" onclick="confirmDelete(this)">Delete</button>
               </form>
             </td>
           </tr>
@@ -266,11 +332,23 @@ func (s *Server) handleAdminPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	clientInfo, err := s.store.GetClientInfo(r.Context(), username)
+	if err != nil {
+		log.Printf("get client info: %v", err)
+	}
+
+	syncLogs, err := s.store.GetRecentSyncLogs(r.Context(), username, 4)
+	if err != nil {
+		log.Printf("get sync logs: %v", err)
+	}
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := adminPageTmpl.Execute(w, adminPageData{
 		Username: username,
 		Threads:  threads,
 		Message:  strings.TrimSpace(r.URL.Query().Get("message")),
+		Client:   clientInfo,
+		SyncLogs: syncLogs,
 	}); err != nil {
 		log.Printf("render admin page: %v", err)
 	}
