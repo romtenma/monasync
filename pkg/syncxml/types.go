@@ -3,7 +3,6 @@ package syncxml
 import (
 	"encoding/xml"
 	"fmt"
-	"log"
 	"strings"
 )
 
@@ -47,7 +46,6 @@ func (r *Request) UnmarshalXML(decoder *xml.Decoder, start xml.StartElement) err
 	r.ClientVer = raw.ClientVer
 	r.OS = raw.OS
 	r.Entities = raw.Entities
-	log.Println("Parsed request with entities:", raw.Entities, "and thread groups:", len(raw.ThreadGroups))
 	r.HasEntities = len(raw.Entities.Threads) > 0
 	r.ThreadGroup = selectFavoriteGroup(raw.ThreadGroups)
 	r.HasThreadGroup = len(r.ThreadGroup.Dirs) > 0 || len(r.ThreadGroup.Threads) > 0 || len(r.ThreadGroup.THs) > 0

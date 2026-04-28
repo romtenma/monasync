@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/binary"
 	"errors"
@@ -115,7 +116,7 @@ func (s *Store) ReplaceSnapshot(ctx context.Context, username string, req syncxm
 	}
 	defer tx.Rollback()
 
-	clientState, err := loadOrCreateClient(ctx, tx, username, req.ClientID, req.SyncNumber, dailyLimit, nowFunc())
+	clientState, err := loadOrCreateClient(ctx, tx, username, req.ClientID, req.SyncNumber, req.ClientName, req.ClientVer, req.OS, dailyLimit, nowFunc())
 	if err != nil {
 		return nil, ClientState{}, err
 	}
@@ -360,13 +361,27 @@ func (s *Store) UpdateThread(ctx context.Context, username string, threadURL str
 		return false, nil
 	}
 
-	result, err := retryOnLocked(ctx, func() (sql.Result, error) {
-		return s.db.ExecContext(ctx, `
-			UPDATE threads
-			SET read_value = ?, now_value = ?, count_value = ?
-			WHERE username = ? AND url = ?
-		`, read, now, count, username, threadURL)
+	tx, err := retryOnLocked(ctx, func() (*sql.Tx, error) {
+		return s.db.BeginTx(ctx, nil)
 	})
+	if err != nil {
+		return false, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	var currentSync sql.NullInt64
+	row := tx.QueryRowContext(ctx, `SELECT sync_number FROM clients WHERE username = ?`, username)
+	if err := row.Scan(&currentSync); err != nil && err != sql.ErrNoRows {
+		return false, fmt.Errorf("load client sync: %w", err)
+	}
+
+	nextSync := currentSync.Int64 + 1
+
+	result, err := tx.ExecContext(ctx, `
+		UPDATE threads
+		SET read_value = ?, now_value = ?, count_value = ?, modified_sync = ?
+		WHERE username = ? AND url = ?
+	`, read, now, count, nextSync, username, threadURL)
 	if err != nil {
 		return false, fmt.Errorf("update thread: %w", err)
 	}
@@ -375,8 +390,26 @@ func (s *Store) UpdateThread(ctx context.Context, username string, threadURL str
 	if err != nil {
 		return false, fmt.Errorf("thread rows affected: %w", err)
 	}
+	if affected == 0 {
+		return false, tx.Commit()
+	}
 
-	return affected > 0, nil
+	nowStr := nowFunc().UTC().Format(time.RFC3339Nano)
+	if currentSync.Valid {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE clients
+			SET sync_number = ?, last_sync_at = ?
+			WHERE username = ?
+		`, nextSync, nowStr, username); err != nil {
+			return false, fmt.Errorf("update client sync: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit tx: %w", err)
+	}
+
+	return true, nil
 }
 
 func (s *Store) DeleteThread(ctx context.Context, username string, url string) (DeleteThreadResult, error) {
@@ -500,7 +533,7 @@ func (s *Store) migrate(ctx context.Context) error {
 	return nil
 }
 
-func loadOrCreateClient(ctx context.Context, tx *sql.Tx, username string, requestedClientID int64, requestedSyncNumber int64, dailyLimit int64, now time.Time) (ClientState, error) {
+func loadOrCreateClient(ctx context.Context, tx *sql.Tx, username string, requestedClientID int64, requestedSyncNumber int64, clientName, clientVer, osStr string, dailyLimit int64, now time.Time) (ClientState, error) {
 	var current clientRow
 	row := tx.QueryRowContext(ctx, `
 		SELECT client_id, sync_number, sync_day, sync_count
@@ -512,11 +545,15 @@ func loadOrCreateClient(ctx context.Context, tx *sql.Tx, username string, reques
 	case sql.ErrNoRows:
 		current.ClientID = requestedClientID
 		if current.ClientID <= 0 {
-			generatedID, genErr := randomPositiveInt64()
-			if genErr != nil {
-				return ClientState{}, fmt.Errorf("generate client_id: %w", genErr)
+			if clientName != "" || clientVer != "" || osStr != "" {
+				current.ClientID = deriveClientID(username, clientName, clientVer, osStr)
+			} else {
+				generatedID, genErr := randomPositiveInt64()
+				if genErr != nil {
+					return ClientState{}, fmt.Errorf("generate client_id: %w", genErr)
+				}
+				current.ClientID = generatedID
 			}
-			current.ClientID = generatedID
 		}
 	default:
 		return ClientState{}, fmt.Errorf("load client: %w", err)
@@ -663,6 +700,20 @@ func normalizeDirName(dir string) string {
 	return dir
 }
 
+func deriveClientID(username, clientName, clientVer, osStr string) int64 {
+	h := sha256.New()
+	for _, part := range []string{username, clientName, clientVer, osStr} {
+		_, _ = h.Write([]byte(part))
+		_, _ = h.Write([]byte("\x00"))
+	}
+	sum := h.Sum(nil)
+	value := int64(binary.BigEndian.Uint64(sum[:8]) & 0x7fffffffffffffff)
+	if value == 0 {
+		return 1
+	}
+	return value
+}
+
 func randomPositiveInt64() (int64, error) {
 	var buf [8]byte
 	if _, err := rand.Read(buf[:]); err != nil {
@@ -694,14 +745,6 @@ func mergeThreadRecord(prev ThreadRecord, current ThreadRecord) ThreadRecord {
 		merged.Dir = prev.Dir
 	}
 	return merged
-}
-
-func threadRecordChanged(merged ThreadRecord, client ThreadRecord) bool {
-	return merged.Title != client.Title ||
-		merged.Dir != client.Dir ||
-		merged.Read != client.Read ||
-		merged.Now != client.Now ||
-		merged.Count != client.Count
 }
 
 func threadPayloadChanged(left ThreadRecord, right ThreadRecord) bool {
