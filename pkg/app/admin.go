@@ -113,7 +113,7 @@ var adminPageTmpl = template.Must(template.New("admin-page").Parse(`<!DOCTYPE ht
     table {
       width: 100%;
       border-collapse: collapse;
-      min-width: 720px;
+      min-width: 640px;
     }
 
     th, td {
@@ -129,6 +129,19 @@ var adminPageTmpl = template.Must(template.New("admin-page").Parse(`<!DOCTYPE ht
       letter-spacing: 0.08em;
       color: var(--muted);
       background: rgba(255, 250, 244, 0.88);
+    }
+
+    th.sortable {
+      cursor: pointer;
+      user-select: none;
+    }
+
+    th.sortable:hover {
+      color: var(--accent-strong);
+    }
+
+    th.sortable.active {
+      color: var(--accent-strong);
     }
 
     tr:last-child td {
@@ -257,6 +270,98 @@ var adminPageTmpl = template.Must(template.New("admin-page").Parse(`<!DOCTYPE ht
     }
   </style>
   <script>
+    let threadSort = { key: '', direction: 'desc' };
+
+    function formatFullDateTime(date) {
+      return new Intl.DateTimeFormat(undefined, {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+      }).format(date);
+    }
+
+    function formatShortDateTime(date) {
+      return new Intl.DateTimeFormat(undefined, {
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+      }).format(date);
+    }
+
+    function getThreadSortValue(row, key) {
+      const cell = row.querySelector('[data-sort-key="' + key + '"]');
+      if (!cell) {
+        return '';
+      }
+      const raw = (cell.dataset.sortValue || cell.textContent || '').trim();
+      if (key === 'read' || key === 'now' || key === 'count') {
+        const n = Number(raw);
+        return Number.isNaN(n) ? 0 : n;
+      }
+      if (key === 'updated_at') {
+        const t = Date.parse(raw);
+        return Number.isNaN(t) ? 0 : t;
+      }
+      return raw.toLowerCase();
+    }
+
+    function applyThreadSort() {
+      const table = document.querySelector('#threads-table');
+      if (!table || !threadSort.key) {
+        return;
+      }
+
+      const tbody = table.querySelector('tbody');
+      const rows = Array.from(tbody.querySelectorAll('tr'));
+      rows.sort((a, b) => {
+        const av = getThreadSortValue(a, threadSort.key);
+        const bv = getThreadSortValue(b, threadSort.key);
+        if (av < bv) {
+          return threadSort.direction === 'asc' ? -1 : 1;
+        }
+        if (av > bv) {
+          return threadSort.direction === 'asc' ? 1 : -1;
+        }
+        const aURL = (a.querySelector('td[data-sort-key="thread"] .url')?.textContent || '').trim();
+        const bURL = (b.querySelector('td[data-sort-key="thread"] .url')?.textContent || '').trim();
+        return aURL.localeCompare(bURL);
+      });
+      rows.forEach(row => tbody.appendChild(row));
+    }
+
+    function sortThreadsByHeader(th) {
+      const key = th.dataset.sortKey;
+      if (!key) {
+        return;
+      }
+
+      if (threadSort.key === key) {
+        threadSort.direction = threadSort.direction === 'asc' ? 'desc' : 'asc';
+      } else {
+        threadSort.key = key;
+        threadSort.direction = key === 'updated_at' ? 'desc' : 'asc';
+      }
+
+      document.querySelectorAll('#threads-table thead th.sortable').forEach(header => {
+        header.classList.remove('active');
+        const base = header.dataset.baseLabel || header.textContent.replace(/ [↑↓]$/, '');
+        header.dataset.baseLabel = base;
+        header.textContent = base;
+      });
+
+      const mark = threadSort.direction === 'asc' ? '↑' : '↓';
+      const base = th.dataset.baseLabel || th.textContent.replace(/ [↑↓]$/, '');
+      th.dataset.baseLabel = base;
+      th.textContent = base + ' ' + mark;
+      th.classList.add('active');
+
+      applyThreadSort();
+    }
+
     function showNotice(msg) {
       let el = document.querySelector('.notice');
       if (!el) {
@@ -328,6 +433,9 @@ var adminPageTmpl = template.Must(template.New("admin-page").Parse(`<!DOCTYPE ht
     function saveThread(btn) {
       const row = btn.closest('tr');
       const url = row.querySelector('.save-form input[name="url"]').value;
+      const prevRead = row.querySelector('.edit-val[data-field="read"]').textContent.trim();
+      const prevNow = row.querySelector('.edit-val[data-field="now"]').textContent.trim();
+      const prevCount = row.querySelector('.edit-val[data-field="count"]').textContent.trim();
       const read = row.querySelector('.edit-input[data-field="read"]').value;
       const now  = row.querySelector('.edit-input[data-field="now"]').value;
       const count = row.querySelector('.edit-input[data-field="count"]').value;
@@ -348,6 +456,21 @@ var adminPageTmpl = template.Must(template.New("admin-page").Parse(`<!DOCTYPE ht
             row.querySelector('.edit-val[data-field="read"]').textContent = read;
             row.querySelector('.edit-val[data-field="now"]').textContent  = now;
             row.querySelector('.edit-val[data-field="count"]').textContent = count;
+            row.querySelector('td[data-sort-key="read"]').dataset.sortValue = read;
+            row.querySelector('td[data-sort-key="now"]').dataset.sortValue = now;
+            row.querySelector('td[data-sort-key="count"]').dataset.sortValue = count;
+
+            const progressChanged = prevRead !== String(read) || prevNow !== String(now) || prevCount !== String(count);
+            if (progressChanged) {
+              const nowIso = new Date().toISOString();
+              const updatedCell = row.querySelector('td[data-sort-key="updated_at"]');
+              const updatedAt = new Date(nowIso);
+              updatedCell.dataset.sortValue = nowIso;
+              updatedCell.textContent = formatShortDateTime(updatedAt);
+              updatedCell.title = formatFullDateTime(updatedAt);
+            }
+
+            applyThreadSort();
             btn.textContent = 'Done';
             setTimeout(() => { btn.textContent = 'Save'; btn.disabled = false; }, 1500);
           } else {
@@ -365,11 +488,18 @@ var adminPageTmpl = template.Must(template.New("admin-page").Parse(`<!DOCTYPE ht
 
     document.addEventListener('DOMContentLoaded', () => {
       document.querySelectorAll('.sync-time').forEach(el => {
-        const d = new Date(el.textContent);
+        const raw = (el.dataset.sortValue || el.textContent || '').trim();
+        const d = new Date(raw);
         if(!isNaN(d)) {
-          el.textContent = d.toLocaleString();
+          el.textContent = formatShortDateTime(d);
+          el.title = formatFullDateTime(d);
         }
       });
+
+      const defaultHeader = document.querySelector('#threads-table thead th[data-sort-key="updated_at"]');
+      if (defaultHeader) {
+        sortThreadsByHeader(defaultHeader);
+      }
     });
   </script>
 </head>
@@ -425,37 +555,39 @@ var adminPageTmpl = template.Must(template.New("admin-page").Parse(`<!DOCTYPE ht
 
     <section class="table-wrap">
       {{if .Threads}}
-      <table>
+      <table id="threads-table">
         <thead>
           <tr>
-            <th>Thread</th>
-            <th>Folder</th>
-            <th>Read</th>
-            <th>Now</th>
-            <th>Count</th>
+            <th class="sortable" data-sort-key="thread" onclick="sortThreadsByHeader(this)">Thread</th>
+            <th class="sortable" data-sort-key="dir" onclick="sortThreadsByHeader(this)">Folder</th>
+            <th class="sortable" data-sort-key="read" onclick="sortThreadsByHeader(this)">Read</th>
+            <th class="sortable" data-sort-key="now" onclick="sortThreadsByHeader(this)">Now</th>
+            <th class="sortable" data-sort-key="count" onclick="sortThreadsByHeader(this)">Count</th>
+            <th class="sortable" data-sort-key="updated_at" onclick="sortThreadsByHeader(this)">Updated</th>
             <th></th>
           </tr>
         </thead>
         <tbody>
           {{range .Threads}}
           <tr>
-            <td>
+            <td data-sort-key="thread">
               <div class="title">{{.Title}}</div>
               <div class="url">{{.URL}}</div>
             </td>
-            <td class="dir">{{.Dir}}</td>
-            <td class="metrics">
+            <td class="dir" data-sort-key="dir">{{.Dir}}</td>
+            <td class="metrics" data-sort-key="read" data-sort-value="{{.Read}}">
               <span class="edit-val" data-field="read">{{.Read}}</span>
               <input class="edit-input" type="number" min="0" data-field="read" value="{{.Read}}">
             </td>
-            <td class="metrics">
+            <td class="metrics" data-sort-key="now" data-sort-value="{{.Now}}">
               <span class="edit-val" data-field="now">{{.Now}}</span>
               <input class="edit-input" type="number" min="0" data-field="now" value="{{.Now}}">
             </td>
-            <td class="metrics">
+            <td class="metrics" data-sort-key="count" data-sort-value="{{.Count}}">
               <span class="edit-val" data-field="count">{{.Count}}</span>
               <input class="edit-input" type="number" min="0" data-field="count" value="{{.Count}}">
             </td>
+            <td class="metrics sync-time thread-updated" data-sort-key="updated_at" data-sort-value="{{.UpdatedAt}}">{{.UpdatedAt}}</td>
             <td>
               <form class="delete-form" method="post" action="/threads/delete">
                 <input type="hidden" name="url" value="{{.URL}}">

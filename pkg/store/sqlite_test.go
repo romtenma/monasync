@@ -282,14 +282,21 @@ func TestReplaceSnapshotUsesSyncNumberForRemoteAddAndDelete(t *testing.T) {
 }
 
 func TestListThreadsReturnsSortedRecords(t *testing.T) {
-	t.Cleanup(withFixedNow(time.Date(2026, 4, 4, 12, 0, 0, 0, time.Local)))
-
 	st := openTestStore(t)
 	t.Cleanup(func() {
 		_ = st.Close()
 	})
 
+	prevNow := nowFunc
+	defer func() {
+		nowFunc = prevNow
+	}()
+	setNow := func(v time.Time) {
+		nowFunc = func() time.Time { return v }
+	}
+
 	ctx := context.Background()
+	setNow(time.Date(2026, 4, 4, 12, 0, 0, 0, time.Local))
 	req := syncxml.Request{
 		Entities: syncxml.RequestItems{Threads: []syncxml.RequestThread{
 			{ID: "2", URL: "https://example.com/test/read.cgi/board/200/", Title: "thread 200", Read: 2, Now: 2, Count: 2},
@@ -305,6 +312,15 @@ func TestListThreadsReturnsSortedRecords(t *testing.T) {
 		t.Fatalf("ReplaceSnapshot: %v", err)
 	}
 
+	setNow(time.Date(2026, 4, 4, 13, 0, 0, 0, time.Local))
+	found, err := st.UpdateThread(ctx, "user", "https://example.com/test/read.cgi/board/100/", 3, 1, 1)
+	if err != nil {
+		t.Fatalf("UpdateThread: %v", err)
+	}
+	if !found {
+		t.Fatal("UpdateThread found = false, want true")
+	}
+
 	records, err := st.ListThreads(ctx, "user")
 	if err != nil {
 		t.Fatalf("ListThreads: %v", err)
@@ -312,11 +328,11 @@ func TestListThreadsReturnsSortedRecords(t *testing.T) {
 	if len(records) != 2 {
 		t.Fatalf("records length = %d, want 2", len(records))
 	}
-	if records[0].Dir != "★" || records[0].URL != "https://example.com/test/read.cgi/board/100/" {
-		t.Fatalf("first record = %+v, want ★ / 100", records[0])
+	if records[0].URL != "https://example.com/test/read.cgi/board/100/" {
+		t.Fatalf("first record = %+v, want URL 100 with latest updated_at", records[0])
 	}
-	if records[1].Dir != "★★" || records[1].URL != "https://example.com/test/read.cgi/board/200/" {
-		t.Fatalf("second record = %+v, want ★★ / 200", records[1])
+	if records[1].URL != "https://example.com/test/read.cgi/board/200/" {
+		t.Fatalf("second record = %+v, want URL 200", records[1])
 	}
 }
 
@@ -386,6 +402,165 @@ func TestDeleteThreadRemovesThreadAndCreatesTombstone(t *testing.T) {
 	if len(records) != 0 {
 		t.Fatalf("records length after stale re-sync = %d, want 0", len(records))
 	}
+}
+
+func TestReplaceSnapshotUpdatesThreadUpdatedAtOnlyOnProgressChange(t *testing.T) {
+	st := openTestStore(t)
+	t.Cleanup(func() {
+		_ = st.Close()
+	})
+
+	prevNow := nowFunc
+	defer func() {
+		nowFunc = prevNow
+	}()
+	setNow := func(v time.Time) {
+		nowFunc = func() time.Time { return v }
+	}
+
+	ctx := context.Background()
+	threadURL := "https://example.com/test/read.cgi/board/123/"
+
+	t1 := time.Date(2026, 4, 4, 12, 0, 0, 0, time.Local)
+	setNow(t1)
+	initialReq := syncxml.Request{
+		Entities: syncxml.RequestItems{Threads: []syncxml.RequestThread{{
+			ID:    "1",
+			URL:   threadURL,
+			Title: "title-v1",
+			Read:  1,
+			Now:   2,
+			Count: 3,
+		}}},
+		ThreadGroup: syncxml.RequestGroup{Dirs: []syncxml.RequestDir{{Name: "★", IDList: "1"}}},
+	}
+	if _, _, err := st.ReplaceSnapshot(ctx, "user", initialReq, 30); err != nil {
+		t.Fatalf("initial ReplaceSnapshot: %v", err)
+	}
+	updated1 := getThreadUpdatedAt(t, st, "user", threadURL)
+	if updated1 != t1.UTC().Format(time.RFC3339Nano) {
+		t.Fatalf("initial updated_at = %q, want %q", updated1, t1.UTC().Format(time.RFC3339Nano))
+	}
+
+	t2 := time.Date(2026, 4, 4, 13, 0, 0, 0, time.Local)
+	setNow(t2)
+	metaOnlyReq := syncxml.Request{
+		Entities: syncxml.RequestItems{Threads: []syncxml.RequestThread{{
+			ID:    "1",
+			URL:   threadURL,
+			Title: "title-v2",
+			Read:  1,
+			Now:   2,
+			Count: 3,
+		}}},
+		ThreadGroup: syncxml.RequestGroup{Dirs: []syncxml.RequestDir{{Name: "★★", IDList: "1"}}},
+	}
+	if _, _, err := st.ReplaceSnapshot(ctx, "user", metaOnlyReq, 30); err != nil {
+		t.Fatalf("meta-only ReplaceSnapshot: %v", err)
+	}
+	updated2 := getThreadUpdatedAt(t, st, "user", threadURL)
+	if updated2 != updated1 {
+		t.Fatalf("meta-only updated_at = %q, want unchanged %q", updated2, updated1)
+	}
+
+	t3 := time.Date(2026, 4, 4, 14, 0, 0, 0, time.Local)
+	setNow(t3)
+	progressReq := syncxml.Request{
+		Entities: syncxml.RequestItems{Threads: []syncxml.RequestThread{{
+			ID:    "1",
+			URL:   threadURL,
+			Title: "title-v2",
+			Read:  2,
+			Now:   2,
+			Count: 3,
+		}}},
+		ThreadGroup: syncxml.RequestGroup{Dirs: []syncxml.RequestDir{{Name: "★★", IDList: "1"}}},
+	}
+	if _, _, err := st.ReplaceSnapshot(ctx, "user", progressReq, 30); err != nil {
+		t.Fatalf("progress ReplaceSnapshot: %v", err)
+	}
+	updated3 := getThreadUpdatedAt(t, st, "user", threadURL)
+	if updated3 != t3.UTC().Format(time.RFC3339Nano) {
+		t.Fatalf("progress updated_at = %q, want %q", updated3, t3.UTC().Format(time.RFC3339Nano))
+	}
+}
+
+func TestUpdateThreadUpdatesUpdatedAtOnlyOnProgressChange(t *testing.T) {
+	st := openTestStore(t)
+	t.Cleanup(func() {
+		_ = st.Close()
+	})
+
+	prevNow := nowFunc
+	defer func() {
+		nowFunc = prevNow
+	}()
+	setNow := func(v time.Time) {
+		nowFunc = func() time.Time { return v }
+	}
+
+	ctx := context.Background()
+	threadURL := "https://example.com/test/read.cgi/board/123/"
+
+	t1 := time.Date(2026, 4, 4, 12, 0, 0, 0, time.Local)
+	setNow(t1)
+	req := syncxml.Request{
+		Entities: syncxml.RequestItems{Threads: []syncxml.RequestThread{{
+			ID:    "1",
+			URL:   threadURL,
+			Title: "thread title",
+			Read:  1,
+			Now:   1,
+			Count: 1,
+		}}},
+		ThreadGroup: syncxml.RequestGroup{Dirs: []syncxml.RequestDir{{Name: "★", IDList: "1"}}},
+	}
+	if _, _, err := st.ReplaceSnapshot(ctx, "user", req, 30); err != nil {
+		t.Fatalf("ReplaceSnapshot: %v", err)
+	}
+	updated1 := getThreadUpdatedAt(t, st, "user", threadURL)
+
+	t2 := time.Date(2026, 4, 4, 13, 0, 0, 0, time.Local)
+	setNow(t2)
+	found, err := st.UpdateThread(ctx, "user", threadURL, 1, 1, 1)
+	if err != nil {
+		t.Fatalf("UpdateThread (same values): %v", err)
+	}
+	if !found {
+		t.Fatal("UpdateThread (same values) found = false, want true")
+	}
+	updated2 := getThreadUpdatedAt(t, st, "user", threadURL)
+	if updated2 != updated1 {
+		t.Fatalf("updated_at after same values = %q, want unchanged %q", updated2, updated1)
+	}
+
+	t3 := time.Date(2026, 4, 4, 14, 0, 0, 0, time.Local)
+	setNow(t3)
+	found, err = st.UpdateThread(ctx, "user", threadURL, 2, 1, 1)
+	if err != nil {
+		t.Fatalf("UpdateThread (changed values): %v", err)
+	}
+	if !found {
+		t.Fatal("UpdateThread (changed values) found = false, want true")
+	}
+	updated3 := getThreadUpdatedAt(t, st, "user", threadURL)
+	if updated3 != t3.UTC().Format(time.RFC3339Nano) {
+		t.Fatalf("updated_at after progress change = %q, want %q", updated3, t3.UTC().Format(time.RFC3339Nano))
+	}
+}
+
+func getThreadUpdatedAt(t *testing.T, st *Store, username, threadURL string) string {
+	t.Helper()
+
+	var updatedAt string
+	if err := st.db.QueryRowContext(context.Background(), `
+		SELECT updated_at
+		FROM threads
+		WHERE username = ? AND url = ?
+	`, username, threadURL).Scan(&updatedAt); err != nil {
+		t.Fatalf("query updated_at: %v", err)
+	}
+	return updatedAt
 }
 
 func openTestStore(t *testing.T) *Store {

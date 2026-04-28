@@ -543,6 +543,9 @@ func TestHandleAdminPageShowsStoredThreads(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "https://example.com/test/read.cgi/board/123/") {
 		t.Fatalf("body = %q, want stored URL", rec.Body.String())
 	}
+	if !strings.Contains(rec.Body.String(), "Updated") {
+		t.Fatalf("body = %q, want Updated column", rec.Body.String())
+	}
 }
 
 func TestHandleDeleteThreadRemovesStoredThread(t *testing.T) {

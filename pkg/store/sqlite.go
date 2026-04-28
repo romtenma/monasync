@@ -41,14 +41,15 @@ type clientRow struct {
 }
 
 type ThreadRecord struct {
-	URL   string
-	Title string
-	Dir   string
-	Read  int64
-	Now   int64
-	Count int64
-	State string
-	Sync  int64
+	URL       string
+	Title     string
+	Dir       string
+	Read      int64
+	Now       int64
+	Count     int64
+	UpdatedAt string
+	State     string
+	Sync      int64
 }
 
 type DeleteThreadResult struct {
@@ -147,6 +148,7 @@ func (s *Store) ReplaceSnapshot(ctx context.Context, username string, req syncxm
 
 	requestSyncNumber := req.SyncNumber
 	currentSyncNumber := clientState.SyncNumber
+	now := nowFunc().UTC().Format(time.RFC3339Nano)
 
 	recordsByURL := make(map[string]ThreadRecord, len(existing)+len(req.Entities.Threads))
 	deletedByURL := make(map[string]DeletedThreadRecord, len(deleted))
@@ -175,12 +177,17 @@ func (s *Store) ReplaceSnapshot(ctx context.Context, username string, req syncxm
 			clientRecord := normalizeComparableRecord(record)
 			record = mergeThreadRecord(prev, record)
 			record.Dir = normalizeDirName(record.Dir)
+			record.UpdatedAt = prev.UpdatedAt
 			serverChanged := prev.Sync > requestSyncNumber
 			recordChanged := threadPayloadChanged(prev, record)
+			progressChanged := threadProgressChanged(prev, record)
 			if recordChanged {
 				record.Sync = currentSyncNumber
 			} else {
 				record.Sync = prev.Sync
+			}
+			if progressChanged {
+				record.UpdatedAt = now
 			}
 			if serverChanged && threadPayloadChanged(record, clientRecord) {
 				record.State = "u"
@@ -191,6 +198,7 @@ func (s *Store) ReplaceSnapshot(ctx context.Context, username string, req syncxm
 			continue
 		} else {
 			record.Dir = normalizeDirName(record.Dir)
+			record.UpdatedAt = now
 			delete(deletedByURL, record.URL)
 		}
 
@@ -232,9 +240,12 @@ func (s *Store) ReplaceSnapshot(ctx context.Context, username string, req syncxm
 	}
 	defer stmt.Close()
 
-	now := nowFunc().UTC().Format(time.RFC3339Nano)
 	for _, record := range records {
-		if _, err := stmt.ExecContext(ctx, username, record.URL, record.Title, record.Dir, record.Read, record.Now, record.Count, record.Sync, now); err != nil {
+		recordUpdatedAt := record.UpdatedAt
+		if recordUpdatedAt == "" {
+			recordUpdatedAt = now
+		}
+		if _, err := stmt.ExecContext(ctx, username, record.URL, record.Title, record.Dir, record.Read, record.Now, record.Count, record.Sync, recordUpdatedAt); err != nil {
 			return nil, ClientState{}, fmt.Errorf("insert thread: %w", err)
 		}
 	}
@@ -282,10 +293,10 @@ func (s *Store) HealthCheck(ctx context.Context) error {
 func (s *Store) ListThreads(ctx context.Context, username string) ([]ThreadRecord, error) {
 	rows, err := retryOnLocked(ctx, func() (*sql.Rows, error) {
 		return s.db.QueryContext(ctx, `
-			SELECT url, title, dir_name, read_value, now_value, count_value, modified_sync
+			SELECT url, title, dir_name, read_value, now_value, count_value, modified_sync, updated_at
 			FROM threads
 			WHERE username = ?
-			ORDER BY dir_name, url
+			ORDER BY updated_at DESC, url
 		`, username)
 	})
 	if err != nil {
@@ -296,7 +307,7 @@ func (s *Store) ListThreads(ctx context.Context, username string) ([]ThreadRecor
 	threads := make([]ThreadRecord, 0)
 	for rows.Next() {
 		var record ThreadRecord
-		if err := rows.Scan(&record.URL, &record.Title, &record.Dir, &record.Read, &record.Now, &record.Count, &record.Sync); err != nil {
+		if err := rows.Scan(&record.URL, &record.Title, &record.Dir, &record.Read, &record.Now, &record.Count, &record.Sync, &record.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan thread: %w", err)
 		}
 		threads = append(threads, record)
@@ -375,13 +386,33 @@ func (s *Store) UpdateThread(ctx context.Context, username string, threadURL str
 		return false, fmt.Errorf("load client sync: %w", err)
 	}
 
+	var currentRead int64
+	var currentNow int64
+	var currentCount int64
+	threadRow := tx.QueryRowContext(ctx, `
+		SELECT read_value, now_value, count_value
+		FROM threads
+		WHERE username = ? AND url = ?
+	`, username, threadURL)
+	if err := threadRow.Scan(&currentRead, &currentNow, &currentCount); err != nil {
+		if err == sql.ErrNoRows {
+			return false, tx.Commit()
+		}
+		return false, fmt.Errorf("load thread counters: %w", err)
+	}
+
+	if currentRead == read && currentNow == now && currentCount == count {
+		return true, tx.Commit()
+	}
+
 	nextSync := currentSync.Int64 + 1
+	nowStr := nowFunc().UTC().Format(time.RFC3339Nano)
 
 	result, err := tx.ExecContext(ctx, `
 		UPDATE threads
-		SET read_value = ?, now_value = ?, count_value = ?, modified_sync = ?
+		SET read_value = ?, now_value = ?, count_value = ?, modified_sync = ?, updated_at = ?
 		WHERE username = ? AND url = ?
-	`, read, now, count, nextSync, username, threadURL)
+	`, read, now, count, nextSync, nowStr, username, threadURL)
 	if err != nil {
 		return false, fmt.Errorf("update thread: %w", err)
 	}
@@ -394,7 +425,6 @@ func (s *Store) UpdateThread(ctx context.Context, username string, threadURL str
 		return false, tx.Commit()
 	}
 
-	nowStr := nowFunc().UTC().Format(time.RFC3339Nano)
 	if currentSync.Valid {
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE clients
@@ -601,7 +631,7 @@ func loadOrCreateClient(ctx context.Context, tx *sql.Tx, username string, reques
 
 func loadExistingThreads(ctx context.Context, tx *sql.Tx, username string) (map[string]ThreadRecord, error) {
 	rows, err := tx.QueryContext(ctx, `
-		SELECT url, title, dir_name, read_value, now_value, count_value, modified_sync
+		SELECT url, title, dir_name, read_value, now_value, count_value, modified_sync, updated_at
 		FROM threads
 		WHERE username = ?
 	`, username)
@@ -613,7 +643,7 @@ func loadExistingThreads(ctx context.Context, tx *sql.Tx, username string) (map[
 	result := map[string]ThreadRecord{}
 	for rows.Next() {
 		var record ThreadRecord
-		if err := rows.Scan(&record.URL, &record.Title, &record.Dir, &record.Read, &record.Now, &record.Count, &record.Sync); err != nil {
+		if err := rows.Scan(&record.URL, &record.Title, &record.Dir, &record.Read, &record.Now, &record.Count, &record.Sync, &record.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan thread: %w", err)
 		}
 		result[record.URL] = record
@@ -751,6 +781,12 @@ func threadPayloadChanged(left ThreadRecord, right ThreadRecord) bool {
 	return left.Title != right.Title ||
 		left.Dir != right.Dir ||
 		left.Read != right.Read ||
+		left.Now != right.Now ||
+		left.Count != right.Count
+}
+
+func threadProgressChanged(left ThreadRecord, right ThreadRecord) bool {
+	return left.Read != right.Read ||
 		left.Now != right.Now ||
 		left.Count != right.Count
 }
