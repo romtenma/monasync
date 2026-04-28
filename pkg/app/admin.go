@@ -257,6 +257,18 @@ var adminPageTmpl = template.Must(template.New("admin-page").Parse(`<!DOCTYPE ht
     }
   </style>
   <script>
+    function showNotice(msg) {
+      let el = document.querySelector('.notice');
+      if (!el) {
+        el = document.createElement('p');
+        el.className = 'notice';
+        const hero = document.querySelector('.hero');
+        hero.insertAdjacentElement('afterend', el);
+      }
+      el.textContent = msg;
+      el.style.display = '';
+    }
+
     function confirmDelete(btn) {
       if (btn.dataset.confirm !== 'true') {
         btn.dataset.confirm = 'true';
@@ -270,7 +282,40 @@ var adminPageTmpl = template.Must(template.New("admin-page").Parse(`<!DOCTYPE ht
           btn.style.color = 'var(--danger)';
         }, 3000);
       } else {
-        btn.form.submit();
+        const row = btn.closest('tr');
+        const form = btn.closest('.delete-form');
+        const threadUrl = form.querySelector('input[name="url"]').value;
+        const body = new URLSearchParams({ url: threadUrl });
+
+        btn.disabled = true;
+        btn.textContent = '...';
+
+        fetch('/threads/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
+          body: body.toString(),
+        })
+          .then(res => res.json())
+          .then(data => {
+            showNotice(data.message || (data.ok ? 'Thread deleted.' : 'Failed to delete.'));
+            if (data.ok) {
+              row.remove();
+            } else {
+              btn.textContent = 'Delete';
+              btn.disabled = false;
+              btn.dataset.confirm = 'false';
+              btn.style.backgroundColor = 'var(--danger-bg)';
+              btn.style.color = 'var(--danger)';
+            }
+          })
+          .catch(() => {
+            alert('Network error.');
+            btn.textContent = 'Delete';
+            btn.disabled = false;
+            btn.dataset.confirm = 'false';
+            btn.style.backgroundColor = 'var(--danger-bg)';
+            btn.style.color = 'var(--danger)';
+          });
       }
     }
 
@@ -469,7 +514,6 @@ func (s *Server) handleAdminPage(w http.ResponseWriter, r *http.Request) {
 	if err := adminPageTmpl.Execute(w, adminPageData{
 		Username: username,
 		Threads:  threads,
-		Message:  strings.TrimSpace(r.URL.Query().Get("message")),
 		Client:   clientInfo,
 		SyncLogs: syncLogs,
 	}); err != nil {
@@ -505,11 +549,13 @@ func (s *Server) handleDeleteThread(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	message := "Thread was not found."
+	w.Header().Set("Content-Type", "application/json")
 	if result.Deleted {
-		message = "Thread deleted."
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "message": "Thread deleted."})
+	} else {
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "message": "Thread was not found."})
 	}
-	http.Redirect(w, r, "/?message="+url.QueryEscape(message), http.StatusSeeOther)
 }
 
 func (s *Server) handleUpdateThread(w http.ResponseWriter, r *http.Request) {

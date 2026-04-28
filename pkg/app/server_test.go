@@ -578,14 +578,18 @@ func TestHandleDeleteThreadRemovesStoredThread(t *testing.T) {
 	deleteReq := httptest.NewRequest(http.MethodPost, "/threads/delete", strings.NewReader("url=https%3A%2F%2Fexample.com%2Ftest%2Fread.cgi%2Fboard%2F123%2F"))
 	deleteReq.Header.Set("Authorization", basicAuth("user", "pass"))
 	deleteReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	deleteReq.Header.Set("Accept", "application/json")
 	deleteRec := httptest.NewRecorder()
 	srv.handleDeleteThread(deleteRec, deleteReq)
 
-	if deleteRec.Code != http.StatusSeeOther {
-		t.Fatalf("status = %d, want 303; body=%s", deleteRec.Code, deleteRec.Body.String())
+	if deleteRec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", deleteRec.Code, deleteRec.Body.String())
 	}
-	if location := deleteRec.Header().Get("Location"); !strings.Contains(location, "Thread+deleted") {
-		t.Fatalf("Location = %q, want success message", location)
+	if ct := deleteRec.Header().Get("Content-Type"); !strings.Contains(ct, "application/json") {
+		t.Fatalf("Content-Type = %q, want application/json", ct)
+	}
+	if !strings.Contains(deleteRec.Body.String(), `"ok":true`) {
+		t.Fatalf("body = %q, want ok:true", deleteRec.Body.String())
 	}
 
 	pageReq := httptest.NewRequest(http.MethodGet, "/", nil)
